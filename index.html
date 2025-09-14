@@ -1,0 +1,788 @@
+<!-- Save as: farm-field-recorder.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b69ff">
+
+<script>
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js")
+      .then(() => console.log("Service Worker registered"));
+  }
+</script>
+
+  <!-- jsPDF library for label export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Farm Field Recorder — MVP</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<style>
+  :root {
+  --accent: #4caf50;
+  --accent-light: #8bc34a;
+  --bg: #f4f1e6;
+  --card: #ffffff;
+  --muted: #5b6b50;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: #2d3a2e;
+  padding: 12px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--accent);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+
+label {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 8px;
+  display: block;
+}
+
+input[type=text], select, button, .small-input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #c8c2b0;
+  font-size: 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input[type=text]:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 4px rgba(76,175,80,0.3);
+  outline: none;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid #c8e6c9;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#map {
+  height: 340px;
+  border-radius: 16px;
+  margin-top: 10px;
+  border: 2px solid var(--accent-light);
+}
+
+@media(min-width:720px){
+  .grid{
+    grid-template-columns: 380px 1fr;
+  }
+}
+
+
+
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Farm Field Recorder</h1>
+  <div class="muted">Phone-first • CSV export • replication guided by GPS</div>
+</header>
+
+<div class="grid">
+  <!-- Left column: batch controls + tests -->
+  <div class="card" id="left-panel">
+    <div>
+      <label>Mode</label>
+      <div class="row">
+        <label><input type="radio" name="mode" value="new" checked> New batch</label>
+        <label><input type="radio" name="mode" value="replicate"> Replicate old batch</label>
+      </div>
+
+      <div id="replicate-area" style="display:none;margin-top:8px">
+        <label>Select a batch to replicate</label>
+        <select id="replicate-select" class="small-input"></select>
+      </div>
+
+      <label>Batch name</label>
+      <input id="batch-name" type="text" placeholder="e.g. Wheat trial 2025 - 12 Aug">
+
+      <label>Owner</label>
+      <input id="batch-owner" type="text" placeholder="Farmer name">
+
+      <div class="actions">
+        <button id="start-batch" class="small">Start / Resume Batch</button>
+        <button id="save-batch" class="small ghost" disabled>Save Batch</button>
+        <button id="export-batch" class="small ghost" disabled>Download CSV</button>
+      </div>
+
+      <div class="muted" style="margin-top:10px">Current batch: <span id="current-batch-name">— none —</span></div>
+      <div class="muted" id="saved-info" style="margin-top:6px"></div>
+    </div>
+
+    <hr style="margin:12px 0;border:none;border-top:1px solid #eef2f6"/>
+
+    <div id="test-form-area" style="display:none">
+      <h3 style="margin:0 0 8px 0">Record test</h3>
+      <form id="test-form">
+        <label>Who conducted</label>
+        <input id="test-who" type="text" placeholder="Your name">
+
+        <label>Sample anatomy</label>
+        <select id="test-anatomy">
+          <option>Whole plant</option><option>Leaf</option><option>Root</option><option>Stem</option><option>Grain</option><option>Soil</option>
+        </select>
+
+        <label>Paddock</label>
+        <input id="test-paddock" type="text" placeholder="e.g. West Paddock">
+
+        <label>Growth stage</label>
+        <input id="test-stage" type="text" placeholder="e.g. Tillering">
+
+        <div style="margin-top:10px" class="info-line">
+          <div class="muted" id="gps-status">GPS: waiting for fix…</div>
+          <div id="distance-guidance" class="muted"></div>
+        </div>
+
+        <div class="actions" style="margin-top:10px">
+          <button type="submit" id="add-test-btn">Add Test (uses device GPS)</button>
+          <button type="button" id="open-map" class="small ghost">Open Map</button>
+        </div>
+      </form>
+
+      <div style="margin-top:12px">
+        <strong>Tests in current batch</strong>
+        <div id="test-list" class="muted" style="margin-top:8px;max-height:220px;overflow:auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right column: map (shown only when replicating or when map opened) -->
+  <div class="card" id="map-card" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <strong id="map-title">Map — replicate mode</strong>
+        <div class="meta" id="map-sub">Tap a saved point to select it. Or tap the map to set a target.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="compass" id="compass-arrow" title="Direction">↑</div>
+      </div>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="row" style="margin-top:8px;align-items:center">
+      <div class="muted" id="nearby-status">No point selected</div>
+      <div style="flex:1"></div>
+      <button id="select-target-btn" class="small ghost">Use this point as target</button>
+    </div>
+
+    <div style="margin-top:8px" class="muted">Step-by-step: <span id="step-text">—</span></div>
+
+  </div>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+/* =========================
+   Farm Field Recorder — MVP
+   Clean single-file app
+   ========================= */
+
+/* --- CONFIG --- */
+const STORAGE_BATCHES = 'ffr_batches_v1';
+const STORAGE_SYNCQ   = 'ffr_sync_queue_v1';
+const REPLICATION_RADIUS = 10; // meters
+const SYNC_ENDPOINT = 'https://your-api.example.com/api/batches'; // replace with your backend
+
+/* --- STATE --- */
+const state = {
+  batches: JSON.parse(localStorage.getItem(STORAGE_BATCHES) || '[]'),
+  syncQueue: JSON.parse(localStorage.getItem(STORAGE_SYNCQ) || '[]'),
+  currentBatch: null,           // { id|null, name, owner, createdAt, tests:[] }
+  mode: 'new',                  // 'new' | 'replicate'
+  latestPos: null,              // {lat,lng,accuracy,timestamp}
+  map: null,
+  userMarker: null, userCircle: null,
+  replicateMarkers: [], replicateCircles: [],
+  target: null, // {lat,lng,source:'map'|'saved', savedIndex?}
+};
+
+/* --- DOM refs --- */
+const el = id => document.getElementById(id);
+const modeRadios = document.querySelectorAll('input[name=mode]');
+const replicateArea = el('replicate-area');
+const replicateSelect = el('replicate-select');
+const startBtn = el('start-batch');
+const saveBtn = el('save-batch');
+const exportBtn = el('export-batch');
+const currentName = el('current-batch-name');
+const savedInfo = el('saved-info');
+const testFormArea = el('test-form-area');
+const testForm = el('test-form');
+const testList = el('test-list');
+const gpsStatus = el('gps-status');
+const distanceGuidance = el('distance-guidance');
+const addTestBtn = el('add-test-btn');
+const openMapBtn = el('open-map');
+const mapCard = el('map-card');
+const mapTitle = el('map-title');
+const mapSub = el('map-sub');
+const compassArrow = el('compass-arrow');
+const nearbyStatus = el('nearby-status');
+const selectTargetBtn = el('select-target-btn');
+const stepText = el('step-text');
+
+/* --- UTILS --- */
+const saveBatchesToStorage = () => localStorage.setItem(STORAGE_BATCHES, JSON.stringify(state.batches));
+const saveSyncQueueToStorage = () => localStorage.setItem(STORAGE_SYNCQ, JSON.stringify(state.syncQueue));
+const uid = (p='b') => p+Date.now().toString(36);
+
+/* haversine bearing/distance utils */
+function toRad(d){ return d * Math.PI/180; }
+function toDeg(r){ return r * 180/Math.PI; }
+function distanceMeters(a,b){
+  // use Leaflet internal distance if map exists, else haversine
+  if(state.map) return state.map.distance( L.latLng(a.lat,a.lng), L.latLng(b.lat,b.lng) );
+  const R=6371000;
+  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lng-a.lng);
+  const lat1=toRad(a.lat), lat2=toRad(b.lat);
+  const sinDlat=Math.sin(dLat/2), sinDlon=Math.sin(dLon/2);
+  const A = sinDlat*sinDlat + Math.cos(lat1)*Math.cos(lat2)*sinDlon*sinDlon;
+  const C = 2*Math.atan2(Math.sqrt(A),Math.sqrt(1-A));
+  return R*C;
+}
+function bearingDeg(a,b){
+  const φ1=toRad(a.lat), φ2=toRad(b.lat), λ1=toRad(a.lng), λ2=toRad(b.lng);
+  const y=Math.sin(λ2-λ1)*Math.cos(φ2);
+  const x=Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1);
+  return (toDeg(Math.atan2(y,x))+360)%360;
+}
+function bearingCompass(bdeg){
+  const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  const idx = Math.round(bdeg/22.5) % 16;
+  return dirs[idx];
+}
+
+/* --- INIT UI state --- */
+function initUI(){
+  // populate replicate select
+  renderSavedBatches();
+  renderReplicateDropdown();
+
+  // radio change
+  modeRadios.forEach(r=>r.addEventListener('change', ()=>{
+    state.mode = r.value;
+    replicateArea.style.display = state.mode === 'replicate' ? 'block' : 'none';
+    mapCard.style.display = (state.mode === 'replicate') ? 'block' : 'none';
+    updateGuidance();
+  }));
+
+  // start/resume batch
+  startBtn.addEventListener('click', ()=>{
+    const name = el('batch-name').value.trim();
+    const owner = el('batch-owner').value.trim();
+    if(!name) return alert('Batch name is required.');
+    // if currentBatch exists, keep tests (resume)
+    if(!state.currentBatch || state.currentBatch.name !== name){
+      state.currentBatch = { id: null, name, owner, createdAt: (new Date()).toISOString(), tests: [] };
+    }
+    currentName.textContent = state.currentBatch.name;
+    testFormArea.style.display = 'block';
+    saveBtn.disabled = false;
+    exportBtn.disabled = false;
+    if(state.mode === 'replicate') {
+      mapCard.style.display = 'block';
+      if(!state.map) initMap();
+    }
+    updateGuidance();
+  });
+
+  // save batch
+  saveBtn.addEventListener('click', ()=>{
+    if(!state.currentBatch) return alert('Start a batch first.');
+    if(!state.currentBatch.name) return alert('Batch must have a name.');
+    state.currentBatch.id = uid('b');
+    state.batches.push(state.currentBatch);
+    saveBatchesToStorage();
+    enqueueSync(state.currentBatch);
+    state.currentBatch = null;
+    currentName.textContent = '— none —';
+    testFormArea.style.display = 'none';
+    saveBtn.disabled = true;
+    exportBtn.disabled = true;
+    renderSavedBatches();
+    renderReplicateDropdown();
+    alert('Batch saved locally (and queued for sync).');
+  });
+
+  // export CSV
+  exportBtn.addEventListener('click', ()=>{
+    if(!state.currentBatch) return alert('No current batch to export. Save first.');
+    downloadCSV(state.currentBatch);
+  });
+
+  // open map for new batch option
+  openMapBtn.addEventListener('click', ()=>{
+    mapCard.style.display = 'block';
+    if(!state.map) initMap();
+    mapTitle.textContent = 'Map — target picker';
+    mapSub.textContent = 'Tap the map to set a target point. Use guidance to walk to that point.';
+  });
+
+  // add test form submit
+  testForm.addEventListener('submit', (ev)=>{
+    ev.preventDefault();
+    addTestFromForm();
+  });
+
+  // replicate dropdown change
+  replicateSelect.addEventListener('change', ()=>{
+    const sel = replicateSelect.value;
+    const found = state.batches.find(b=>b.id===sel);
+    if(found) loadReplicateBatch(found);
+  });
+
+  // Select target button (explicit)
+  selectTargetBtn.addEventListener('click', ()=>{
+    if(!state.target) return;
+    if(state.target.source !== 'saved') {
+      // if user selected a map location, confirm using it
+      alert('Target selected on map.');
+    } else {
+      // using saved savedIndex
+      alert('Selected saved replicate point.');
+    }
+  });
+
+  // online event: try flush sync queue
+  window.addEventListener('online', ()=>flushSyncQueue());
+}
+
+/* --- MAP --- */
+function initMap(){
+  // create map
+  state.map = L.map('map', {zoomControl:true, tap:false}).setView([0,0],2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(state.map);
+
+  // map click: set a target (ad-hoc)
+  state.map.on('click', (ev)=>{
+    setTarget({lat:ev.latlng.lat, lng:ev.latlng.lng, source:'map'});
+  });
+
+  // create user marker/circle will be done by GPS watch handler
+  // load existing saved markers if replicating
+  renderReplicateMarkers();
+}
+
+/* Render saved replicate markers when a replicate batch loaded */
+function renderReplicateMarkers(batch) {
+  // clear existing
+  (state.replicateMarkers || []).forEach(m => state.map.removeLayer(m));
+  (state.replicateCircles || []).forEach(c => state.map.removeLayer(c));
+  state.replicateMarkers = []; state.replicateCircles = [];
+
+  // when replicateSelect has a selection, show that batch's points
+  const sel = replicateSelect.value;
+  if(!sel) return;
+  const batchFound = state.batches.find(b=>b.id===sel);
+  if(!batchFound) return;
+
+  batchFound.tests.forEach((t, idx) => {
+    const m = L.marker([t.lat, t.lng], {title:`Point ${idx+1}`}).addTo(state.map).bindPopup(`Point ${idx+1}`);
+    m.on('click', () => {
+      setTarget({lat: t.lat, lng: t.lng, source:'saved', savedIndex: idx, savedBatchId: batchFound.id});
+    });
+    const c = L.circle([t.lat, t.lng], {radius: REPLICATION_RADIUS, color:'red', fillOpacity:0.15}).addTo(state.map);
+    state.replicateMarkers.push(m);
+    state.replicateCircles.push(c);
+  });
+
+  if(batchFound.tests.length) state.map.setView([batchFound.tests[0].lat, batchFound.tests[0].lng], 16);
+}
+
+/* Set a target (either map click or saved replicate point) */
+function setTarget(t){
+  state.target = t;
+  // clear previous target marker
+  if(state._targetMarker) { state.map.removeLayer(state._targetMarker); state._targetMarker = null; }
+  // add a marker for target
+  state._targetMarker = L.marker([t.lat, t.lng], {icon: L.icon({iconUrl:'https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon.png', iconSize:[25,41], iconAnchor:[12,41]})}).addTo(state.map).bindPopup('Target');
+  state.map.panTo([t.lat, t.lng]);
+  updateGuidance();
+}
+
+/* --- GPS tracking (fast adds) --- */
+let watchId = null;
+function startWatchingGPS(){
+  if(!('geolocation' in navigator)) {
+    gpsStatus.textContent = 'GPS not available';
+    return;
+  }
+  if(watchId !== null) return; // already watching
+  watchId = navigator.geolocation.watchPosition(pos => {
+    state.latestPos = {lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, ts: pos.timestamp};
+    gpsStatus.textContent = `GPS: ${state.latestPos.lat.toFixed(5)}, ${state.latestPos.lng.toFixed(5)} (±${Math.round(state.latestPos.accuracy)} m)`;
+    // create / update user marker
+    if(!state.userMarker && state.map){
+      state.userMarker = L.circleMarker([state.latestPos.lat, state.latestPos.lng], {radius:6, color:'blue', fillOpacity:1}).addTo(state.map);
+      state.userCircle = L.circle([state.latestPos.lat, state.latestPos.lng], {radius: Math.max(5, state.latestPos.accuracy), color:'blue', fillOpacity:0.06}).addTo(state.map);
+      state.map.setView([state.latestPos.lat, state.latestPos.lng], 16);
+    } else if(state.map) {
+      state.userMarker.setLatLng([state.latestPos.lat, state.latestPos.lng]);
+      state.userCircle.setLatLng([state.latestPos.lat, state.latestPos.lng]);
+      state.userCircle.setRadius(Math.max(5, state.latestPos.accuracy));
+    }
+    updateGuidance();
+  }, err => {
+    gpsStatus.textContent = 'GPS error: ' + err.message;
+  }, {enableHighAccuracy:true, maximumAge:2000, timeout:10000});
+}
+
+/* --- Test add logic --- */
+function addTestFromForm(){
+  if(!state.currentBatch) return alert('Start a batch first.');
+  if(!state.latestPos) return alert('Waiting for GPS fix — move around until your device gets a fix.');
+  const who = el('test-who').value.trim() || state.currentBatch.owner || 'unknown';
+  const anatomy = el('test-anatomy').value;
+  const paddock = el('test-paddock').value;
+  const stage = el('test-stage').value;
+  // If replicating and a target is set and it's a saved replicate point, ensure within radius
+  if(state.mode === 'replicate' && state.target && state.target.source === 'saved'){
+    const d = distanceMeters({lat:state.latestPos.lat, lng:state.latestPos.lng}, {lat:state.target.lat, lng:state.target.lng});
+    if(d > REPLICATION_RADIUS) return alert(`You must be within ${REPLICATION_RADIUS} m of the selected replicate point to add the test (current ${Math.round(d)} m).`);
+  }
+  // Build test record: record device lat/lng as authoritative, also keep target if present
+  const test = {
+    id: uid('t'),
+    who, anatomy, paddock, stage,
+    timestamp: (new Date()).toISOString(),
+    recordedLat: state.latestPos.lat, recordedLng: state.latestPos.lng,
+    targetLat: state.target ? state.target.lat : null,
+    targetLng: state.target ? state.target.lng : null,
+    replicateFrom: (state.target && state.target.source === 'saved') ? { batchId: state.target.savedBatchId, index: state.target.savedIndex } : null
+  };
+  state.currentBatch.tests.push(test);
+  renderCurrentTests();
+  // optionally add marker to map for this test
+  if(state.map) {
+    L.circle([test.recordedLat, test.recordedLng], {radius:3, color:'green', fillOpacity:1}).addTo(state.map);
+  }
+  testForm.reset();
+}
+
+/* --- Rendering current tests --- */
+function renderCurrentTests(){
+  currentName.textContent = state.currentBatch ? state.currentBatch.name : '— none —';
+  if(!state.currentBatch) { testList.innerHTML = ''; return; }
+  testList.innerHTML = '';
+  state.currentBatch.tests.forEach((t, i) => {
+    const elLine = document.createElement('div');
+    elLine.style.padding='6px 0';
+    elLine.innerHTML = `<strong>${i+1}</strong>. ${t.who} • ${t.anatomy} • ${t.paddock || '-'} • ${t.stage || '-'}<br/><span class="meta">${t.timestamp} @ ${t.recordedLat.toFixed(5)}, ${t.recordedLng.toFixed(5)} ${t.replicateFrom ? '• replicated from ' + t.replicateFrom.batchId + '['+t.replicateFrom.index+']' : ''}</span>`;
+    testList.appendChild(elLine);
+  });
+}
+
+/* --- Saved batches UI --- */
+function renderSavedBatches(){
+  savedInfo.textContent = `${state.batches.length} saved batch(es)`;
+  // show export / quick actions could be added per-batch in a later iteration
+}
+function renderReplicateDropdown(){
+  replicateSelect.innerHTML = '<option value="">-- select saved batch --</option>';
+  state.batches.forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b.id; opt.textContent = `${b.name} (${b.tests.length} pts)`;
+    replicateSelect.appendChild(opt);
+  });
+}
+
+/* --- load a replicate batch's points onto map --- */
+function loadReplicateBatch(batch){
+  if(!state.map) initMap();
+  // store the selection in dropdown value and render markers
+  // clear any existing replicate markers
+  (state.replicateMarkers || []).forEach(m => state.map.removeLayer(m));
+  (state.replicateCircles || []).forEach(c => state.map.removeLayer(c));
+  state.replicateMarkers = []; state.replicateCircles = [];
+
+  batch.tests.forEach((t, i) => {
+    const marker = L.marker([t.recordedLat || t.lat || t.targetLat || t.recordedLat, t.recordedLng || t.lng || t.targetLng || t.recordedLng])
+                    .addTo(state.map).bindPopup(`Saved point ${i+1}`);
+    marker.on('click', ()=> {
+      setTarget({lat: (t.recordedLat||t.lat), lng:(t.recordedLng||t.lng), source:'saved', savedIndex:i, savedBatchId:batch.id});
+    });
+    const circle = L.circle([t.recordedLat||t.lat, t.recordedLng||t.lng], {radius:REPLICATION_RADIUS, color:'red', fillOpacity:0.12}).addTo(state.map);
+    state.replicateMarkers.push(marker);
+    state.replicateCircles.push(circle);
+  });
+  if(batch.tests.length) state.map.setView([batch.tests[0].recordedLat||batch.tests[0].lat, batch.tests[0].recordedLng||batch.tests[0].lng], 16);
+
+  // ensure map card visible
+  mapCard.style.display = 'block';
+  mapTitle.textContent = `Map — replicating: ${batch.name}`;
+  mapSub.textContent = 'Tap any red marker to select it as your replicate target';
+}
+
+/* --- Guidance / UI updates --- */
+function updateGuidance(){
+  // update guidance text: distance and arrow if target set
+  if(state.target && state.latestPos){
+    const d = distanceMeters({lat:state.latestPos.lat, lng:state.latestPos.lng}, {lat:state.target.lat, lng:state.target.lng});
+    const b = bearingDeg({lat:state.latestPos.lat, lng:state.latestPos.lng}, {lat:state.target.lat, lng:state.target.lng});
+    distanceGuidance.textContent = `${Math.round(d)} m`;
+    nearbyStatus.textContent = `Distance: ${Math.round(d)} m`;
+    stepText.textContent = `${Math.round(d)} m — ${bearingCompass(b)} (${Math.round(b)}°)`;
+    // rotate compass arrow
+    compassArrow.style.transform = `rotate(${b}deg)`;
+    // enable/disable add-test button according to rules
+    if(state.mode === 'new'){
+      addTestBtn.disabled = false;
+    } else if(state.mode === 'replicate'){
+      addTestBtn.disabled = !(d <= REPLICATION_RADIUS);
+      if(d <= REPLICATION_RADIUS) nearbyStatus.textContent = `Within ${REPLICATION_RADIUS} m — ready to add test`;
+    }
+  } else {
+    distanceGuidance.textContent = '';
+    stepText.textContent = 'No target selected';
+    nearbyStatus.textContent = state.mode === 'replicate' ? 'Select a replicate point' : 'No map target';
+    // default add button enable rules
+    addTestBtn.disabled = (state.mode === 'replicate');
+  }
+
+  // GPS status
+  if(state.latestPos){
+    gpsStatus.textContent = `GPS: ${state.latestPos.lat.toFixed(5)}, ${state.latestPos.lng.toFixed(5)} (±${Math.round(state.latestPos.accuracy)} m)`;
+  }
+}
+
+/* --- CSV export / share --- */
+function batchToCSV(batch){
+  // columns: batchName,batchOwner,testIndex,who,anatomy,paddock,stage,timestamp,recordedLat,recordedLng,targetLat,targetLng,replicatedFrom
+  const header = ['batchName','batchOwner','testIndex','who','anatomy','paddock','stage','timestamp','recordedLat','recordedLng','targetLat','targetLng','replicateFrom'];
+  const lines = [header.join(',')];
+  batch.tests.forEach((t,i)=>{
+    const row = [
+      `"${(batch.name||'').replace(/"/g,'""')}"`,
+      `"${(batch.owner||'').replace(/"/g,'""')}"`,
+      i+1,
+      `"${(t.who||'').replace(/"/g,'""')}"`,
+      `"${(t.anatomy||'').replace(/"/g,'""')}"`,
+      `"${(t.paddock||'').replace(/"/g,'""')}"`,
+      `"${(t.stage||'').replace(/"/g,'""')}"`,
+      `"${(t.timestamp||'').replace(/"/g,'""')}"`,
+      t.recordedLat || '',
+      t.recordedLng || '',
+      t.targetLat || '',
+      t.targetLng || '',
+      t.replicateFrom ? `${t.replicateFrom.batchId}:${t.replicateFrom.index}` : ''
+    ];
+    lines.push(row.join(','));
+  });
+  return lines.join("\n");
+}
+
+function downloadCSV(batch){
+  const csv = batchToCSV(batch);
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = (batch.name||'batch').replace(/\s+/g,'_') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+// mobile share using Web Share API (files)
+async function shareCSV(batch){
+  const csv = batchToCSV(batch);
+  const blob = new Blob([csv], {type:'text/csv'});
+  const file = new File([blob], (batch.name||'batch') + '.csv', {type:'text/csv'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try {
+      await navigator.share({files:[file], title: batch.name, text: 'Batch CSV' });
+      return true;
+    }catch(err){ console.warn('Share failed', err); }
+  }
+  // fallback to download
+  downloadCSV(batch);
+  alert('CSV downloaded — attach it to your email to share.');
+}
+
+/* --- SYNC QUEUE (simple stub) --- */
+function enqueueSync(batch){
+  // add batch to sync queue
+  state.syncQueue.push(batch);
+  saveSyncQueueToStorage();
+  flushSyncQueue();
+}
+async function flushSyncQueue(){
+  if(!navigator.onLine) return;
+  if(!state.syncQueue.length) return;
+  const queue = state.syncQueue.slice();
+  for(let i=0;i<queue.length;i++){
+    const b = queue[i];
+    try{
+      // attempt to POST to SYNC_ENDPOINT
+      // Replace with your server API. Here is a sample POST payload.
+      const res = await fetch(SYNC_ENDPOINT, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify(b)
+      });
+      if(!res.ok) throw new Error('Server returned '+res.status);
+      // success => remove from queue
+      state.syncQueue = state.syncQueue.filter(x => x.id !== b.id);
+      saveSyncQueueToStorage();
+    }catch(err){
+      console.warn('Sync failed for batch', b.id, err);
+      // Stop trying further in this run to avoid abusive loops
+      break;
+    }
+  }
+}
+
+/* --- Startup --- */
+initUI();
+startWatchingGPS();
+
+// create map only if replicating or user opens map
+function ensureMapCreated(){
+  if(!state.map) initMap();
+}
+
+// update some UI after page load
+renderCurrentTests();
+updateGuidance();
+
+/* expose a couple of helper functions for saved-batches actions (quick) */
+window.ffr = {
+  downloadSavedCSV: (batchId)=>{
+    const b = state.batches.find(x=>x.id===batchId);
+    if(b) downloadCSV(b);
+  },
+  shareSavedCSV: (batchId) => {
+    const b = state.batches.find(x=>x.id===batchId);
+    if(b) shareCSV(b);
+  }
+};
+
+/* When the replicate dropdown changes, show markers */
+replicateSelect.addEventListener('change', ()=>{
+  if(!replicateSelect.value) return;
+  const b = state.batches.find(x=>x.id===replicateSelect.value);
+  if(b){
+    ensureMapCreated();
+    loadReplicateBatch(b);
+  }
+});
+
+/* Provide a quick way to export any saved batch (right now: top export uses current batch) */
+/* Note: you can extend the saved list UI to include per-batch buttons (download/share/delete) — I kept this minimal for clarity. */
+// --- PDF LABEL EXPORT ---
+const exportLabelsBtn = document.createElement('button');
+exportLabelsBtn.textContent = 'Export Labels (PDF)';
+exportLabelsBtn.className = 'small ghost';
+exportLabelsBtn.disabled = true;
+document.querySelector('.actions').appendChild(exportLabelsBtn);
+
+exportLabelsBtn.addEventListener('click', () => {
+  if(!state.currentBatch || !state.currentBatch.tests.length){
+    return alert('No tests in current batch to export.');
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF('p','mm','a4');
+  const margin = 10;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const colWidth = (pageWidth - margin*2)/2;
+  const rowHeight = 35;
+  let x = margin, y = margin;
+
+  state.currentBatch.tests.forEach((t,i)=>{
+    doc.setFontSize(10);
+    doc.rect(x, y, colWidth-2, rowHeight-2);
+    doc.text(`Date: ${new Date(t.timestamp).toLocaleDateString()}`, x+2, y+6);
+    doc.text(`Paddock: ${t.paddock||'-'}`, x+2, y+12);
+    doc.text(`Stage: ${t.stage||'-'}`, x+2, y+18);
+    doc.text(`GPS: ${t.recordedLat.toFixed(5)}, ${t.recordedLng.toFixed(5)}`, x+2, y+24);
+
+    if(x + colWidth*2 > pageWidth - margin){
+      x = margin; y += rowHeight;
+    } else {
+      x += colWidth;
+    }
+
+    if(y + rowHeight > doc.internal.pageSize.getHeight() - margin){
+      doc.addPage();
+      x = margin; y = margin;
+    }
+  });
+
+  doc.save(`${state.currentBatch.name||'batch'}-labels.pdf`);
+});
+
+// Enable PDF button when batch has tests
+const observer = new MutationObserver(() => {
+  exportLabelsBtn.disabled = !(state.currentBatch && state.currentBatch.tests.length);
+});
+observer.observe(document.getElementById('test-list'), {childList:true, subtree:true});
+
+</script>
+</body>
+</html>
+
+
+
+
+
+
